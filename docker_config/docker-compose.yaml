@@ -7,7 +7,8 @@ services:
         USERNAME: yyq
         USER_UID: "${DEV_UID:-1000}"
         USER_GID: "${DEV_GID:-1000}"
-    image: xv6-dev:ubuntu24.04
+        APT_MIRROR: "${APT_MIRROR:-mirrors.ustc.edu.cn}"
+    image: xv6-dev:6s081-2020
     hostname: xv6-dev
     init: true
     working_dir: /workspace
