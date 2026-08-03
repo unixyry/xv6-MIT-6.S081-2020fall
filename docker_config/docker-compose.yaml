@@ -1,0 +1,22 @@
+services:
+  xv6:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        USERNAME: yyq
+        USER_UID: "${DEV_UID:-1000}"
+        USER_GID: "${DEV_GID:-1000}"
+    image: xv6-dev:ubuntu24.04
+    hostname: xv6-dev
+    init: true
+    working_dir: /workspace
+    volumes:
+      # Put these two files in the xv6 repository root. The repository is then
+      # mounted directly into the container, so edits remain on the host.
+      - ..:/workspace
+      # Optional: share the host Git identity (uncomment only if the file exists).
+      # - ${HOME}/.gitconfig:/home/yyq/.gitconfig:ro
+    stdin_open: true
+    tty: true
+    command: ["sleep", "infinity"]
