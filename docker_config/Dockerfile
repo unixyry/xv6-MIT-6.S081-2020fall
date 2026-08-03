@@ -1,13 +1,27 @@
-FROM ubuntu:24.04
+FROM debian:bullseye-slim
 
 ARG USERNAME=yyq
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG APT_MIRROR=mirrors.ustc.edu.cn
 
-# xv6/6.S081: compiler, RISC-V cross-toolchain, QEMU, GDB and grade scripts.
-# --no-install-recommends and apt cache cleanup keep the image relatively small.
-RUN apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+# 使用可覆盖的 Debian 镜像地址，改善国内网络下载速度。
+RUN sed -i \
+      -e "s|deb.debian.org|${APT_MIRROR}|g" \
+      -e "s|security.debian.org|${APT_MIRROR}|g" \
+      /etc/apt/sources.list \
+    && apt-get \
+      -o Acquire::Retries=5 \
+      -o Acquire::ForceIPv4=true \
+      -o Acquire::http::Timeout=60 \
+      -o Acquire::http::Pipeline-Depth=0 \
+      update \
+    && DEBIAN_FRONTEND=noninteractive apt-get \
+      -o Acquire::Retries=5 \
+      -o Acquire::ForceIPv4=true \
+      -o Acquire::http::Timeout=60 \
+      -o Acquire::http::Pipeline-Depth=0 \
+      install -y --no-install-recommends \
         binutils-riscv64-linux-gnu \
         build-essential \
         ca-certificates \
