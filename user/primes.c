@@ -7,25 +7,23 @@
 void func(int* p)
 {
     int recv[35] = {0};
-    int i = 0;
+    int idx = 0;
+    int p_new[2] = {0};
 
-    memset(recv, 0, sizeof(recv));
-
-    while (read(p[0], &recv[i], sizeof(recv[i])) > 0)
+    while (read(p[0], &recv[idx], sizeof(recv[idx])) > 0)
     {
-        if (i == 0)     // 第一个数, 直接打印
+        if (idx == 0)     // 第一个数, 直接打印
         {
-            if (recv[i] == 0)
-            {
-                break;
-            }
-            printf("prime %d\n", recv[i]);
+            printf("prime %d\n", recv[idx]);
         }
-        else if (recv[i] % recv[0] != 0)    // 不是第一个数的倍数
+        else if (recv[idx] % recv[0] != 0)    // 不是第一个数的倍数
         {
-            if (i == 1)    // 第二个合法的数, 继续传递
+            if (idx == 1)    // 第二个合法的数, 继续传递
             {
                 int pid = 0;
+
+                // 创建新的管道, 传递给子进程
+                pipe(p_new);
                 pid = fork();
                 if (pid < 0)
                 {
@@ -34,40 +32,37 @@ void func(int* p)
                 }
                 else if (pid == 0)  // 子进程
                 {
-                    func(p);
-                    close(p[1]);
-                    close(p[0]);
+                    close(p_new[1]);
+                    func(p_new);
+                    close(p_new[0]);
                     wait(0);
                     exit(0);
                 }
                 else   // 父进程
                 {
-                    write(p[1], &recv[i], sizeof(recv[i]));
+                    write(p_new[1], &recv[idx], sizeof(recv[idx]));
                 }
             }
             else    // 已经fork, 父进程只需要传递
-            {
-                
-                if (recv[i] % recv[0] != 0)
+            {     
+                if (recv[idx] % recv[0] != 0)
                 {
-                    write(p[1], &recv[i], sizeof(recv[i]));
+                    write(p_new[1], &recv[idx], sizeof(recv[idx]));
                 }
             }
         }
         else    // 是第一个数的倍数, 跳过
         {
-            if (recv[i] == 0)
-            {
-                write(p[1], &recv[i], sizeof(recv[i]));
-                break;
-            }
             continue;
         }
         
-        i++;
+        idx++;
     }
 
-    return ;
+    close(p[0]);
+    close(p_new[1]);
+    wait(0);
+    exit(0);
 }
 
 int main(int argc, char *argv[])
@@ -77,12 +72,10 @@ int main(int argc, char *argv[])
         printf("[prime]Usage: prime\n");
     }
 
-    int vec[N+1] = {0};     // 最后一个数为0标记结束
+    int vec[N] = {0};
     int i = 0;
 
-    memset(vec, 0, sizeof(vec));
-
-    for (i = 0; i < sizeof(vec)/sizeof(vec[0])-1; i++)
+    for (i = 0; i < sizeof(vec)/sizeof(vec[0]); i++)
     {
         vec[i] = i + 2;
     }
@@ -100,11 +93,8 @@ int main(int argc, char *argv[])
     }
     else if (pid == 0)  // 子进程
     {
-        func(p);
         close(p[1]);
-        close(p[0]);
-        wait(0);
-        exit(0);
+        func(p);
     }
     else    // root进程
     {
