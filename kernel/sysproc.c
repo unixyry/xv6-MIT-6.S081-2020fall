@@ -6,6 +6,10 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
+
+extern uint64 get_freemem();
+extern uint64 get_proc_num();
 
 uint64
 sys_exit(void)
@@ -106,5 +110,29 @@ uint64 sys_trace(void)
 		return -1;
 	}
 
+	return 0;
+}
+
+// 收集系统信息
+uint64 sys_sysinfo(void)
+{
+	uint64 u_sysinfo_addr = 0;
+  struct sysinfo k_info = {0};
+  struct proc *p = myproc();
+
+  // 获取用户层的sysinfo结构体虚拟内存位置
+  if(argaddr(0, &(u_sysinfo_addr)) < 0)
+	{
+		return -1;
+	}
+
+  // 获取系统信息
+  k_info.freemem = get_freemem();
+  k_info.nproc = get_proc_num();
+
+  // 将内容拷贝回用户层的sysinfo结构体虚拟内存位置
+  if (copyout(p->pagetable, u_sysinfo_addr, (char*)&k_info, sizeof(k_info)) < 0)
+    return -1;
+  
 	return 0;
 }
