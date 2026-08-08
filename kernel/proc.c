@@ -277,6 +277,9 @@ fork(void)
 
   np->parent = p;
 
+  // 复制trace_mask
+  np->trace_mask = p->trace_mask;
+
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
