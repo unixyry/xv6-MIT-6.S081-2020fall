@@ -131,8 +131,9 @@ kvmpa(uint64 va)
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
-  
-  pte = walk(kernel_pagetable, va, 0);
+
+  // 这里需要使用当前在satp寄存器中的内核页表
+  pte = walk((pagetable_t)(r_satp()<<12), va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)

@@ -21,6 +21,10 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+extern char etext[];  // kernel.ld sets this to end of kernel code.
+
+extern pagetable_t kernel_pagetable;
+
 // initialize the proc table at boot time.
 void
 procinit(void)
@@ -39,7 +43,9 @@ procinit(void)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+
+      // 每个进程的内核栈物理页需映射到每个进程的内核页表中,kernel/proc.c/proc_kpagetable()
+      p->kstack_pa = (uint64)pa;
   }
   kvminithart();
 }
@@ -121,6 +127,15 @@ found:
     return 0;
   }
 
+  // 创建进程的内核页表
+  p->k_pagetable = proc_kpagetable(p);
+  if (p->k_pagetable == 0)
+  {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -141,7 +156,10 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if (p->k_pagetable)
+    proc_free_kpagetable(p->k_pagetable);
   p->pagetable = 0;
+  p->k_pagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -185,6 +203,93 @@ proc_pagetable(struct proc *p)
   return pagetable;
 }
 
+// 进程内核页表中，内核虚拟地址映射到物理地址
+pagetable_t proc_kpagetable(struct proc* p)
+{
+  pagetable_t k_pagetable = 0;
+
+  k_pagetable = uvmcreate();
+  if(k_pagetable == 0)
+    return 0;
+
+  if (mappages(k_pagetable, UART0, PGSIZE, UART0, PTE_R | PTE_W) < 0)
+  {
+    goto BAD_UART0;
+  }
+
+  if (mappages(k_pagetable, VIRTIO0, PGSIZE, VIRTIO0, PTE_R | PTE_W) < 0)
+  {
+    goto BAD_VIRTIO0;
+  }
+
+  if (mappages(k_pagetable, CLINT, 0x10000, CLINT, PTE_R | PTE_W) < 0)
+  {
+    goto BAD_CLINT;
+  }
+
+  if (mappages(k_pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W) < 0)
+  {
+    goto BAD_PLIC;
+  }
+
+  if (mappages(k_pagetable, KERNBASE, (uint64)etext-KERNBASE, KERNBASE, PTE_R | PTE_X) < 0)
+  {
+    goto BAD_KERNBASE;
+  }
+
+  if (mappages(k_pagetable, (uint64)etext, PHYSTOP-(uint64)etext, (uint64)etext, PTE_R | PTE_W) < 0)
+  {
+    goto BAD_etext;
+  }
+
+  if (mappages(k_pagetable, TRAMPOLINE, PGSIZE, (uint64)trampoline, PTE_R | PTE_X) < 0)
+  {
+    goto BAD_TRAMPOLINE;
+  }
+
+  if(p->kstack_pa == 0)
+  {
+    goto BAD_TRAMPOLINE;
+  }
+
+  if (mappages(k_pagetable, U_KSTACK, PGSIZE, (uint64)p->kstack_pa, PTE_R | PTE_W) < 0)
+  {
+    goto BAD_U_KSTACK;
+  }
+
+  p->kstack = U_KSTACK;
+
+  return k_pagetable;
+
+BAD_U_KSTACK:
+  uvmunmap(k_pagetable, U_KSTACK, PGSIZE/PGSIZE, 0);
+
+BAD_TRAMPOLINE:
+  uvmunmap(k_pagetable, TRAMPOLINE, PGSIZE/PGSIZE, 0);
+
+BAD_etext:
+  uvmunmap(k_pagetable, (uint64)etext, PGROUNDUP(PHYSTOP-(uint64)etext)/PGSIZE, 0);
+
+BAD_KERNBASE:
+  uvmunmap(k_pagetable, KERNBASE, PGROUNDUP((uint64)etext-KERNBASE)/PGSIZE, 0);
+
+BAD_PLIC:
+  uvmunmap(k_pagetable, PLIC, PGROUNDUP(0x400000)/PGSIZE, 0);
+
+BAD_CLINT:
+  uvmunmap(k_pagetable, CLINT, PGROUNDUP(0x10000)/PGSIZE, 0);
+
+BAD_VIRTIO0:
+  uvmunmap(k_pagetable, VIRTIO0, PGSIZE/PGSIZE, 0);
+
+BAD_UART0:
+  uvmunmap(k_pagetable, UART0, PGSIZE/PGSIZE, 0);
+
+  // 回收进程的内核页表
+  uvmfree(k_pagetable, 0);
+  return 0;
+}
+
 // Free a process's page table, and free the
 // physical memory it refers to.
 void
@@ -193,6 +298,22 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+void proc_free_kpagetable(pagetable_t k_pagetable)
+{
+  // 只清掉三级页表的页表项(叶子页表项)的映射关系, 但并不释放叶子页表项指向物理页 
+  uvmunmap(k_pagetable, UART0, PGSIZE/PGSIZE, 0);
+  uvmunmap(k_pagetable, VIRTIO0, PGSIZE/PGSIZE, 0);
+  uvmunmap(k_pagetable, CLINT, PGROUNDUP(0x10000)/PGSIZE, 0);
+  uvmunmap(k_pagetable, PLIC, PGROUNDUP(0x400000)/PGSIZE, 0);
+  uvmunmap(k_pagetable, KERNBASE, PGROUNDUP((uint64)etext-KERNBASE)/PGSIZE, 0);
+  uvmunmap(k_pagetable, (uint64)etext, PGROUNDUP(PHYSTOP-(uint64)etext)/PGSIZE, 0);
+  uvmunmap(k_pagetable, TRAMPOLINE, PGSIZE/PGSIZE, 0);
+  uvmunmap(k_pagetable, U_KSTACK, PGSIZE/PGSIZE, 0);
+
+  // 回收进程的内核页表
+  uvmfree(k_pagetable, 0);
 }
 
 // a user program that calls exec("/init")
@@ -471,9 +592,19 @@ scheduler(void)
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
+
+        // 切换进程内核页表并刷新快表
+        w_satp(MAKE_SATP(p->k_pagetable));
+        sfence_vma();
+
+        // printf("[pid %d] k_pagetable is [%p] satp is [%p]\n", p->pid, p->k_pagetable, r_satp());
+
         p->state = RUNNING;
         c->proc = p;
         swtch(&c->context, &p->context);
+
+        // 恢复全局 kernel_pagetable 并刷新 TLB
+        kvminithart();  
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
@@ -485,6 +616,11 @@ scheduler(void)
     }
 #if !defined (LAB_FS)
     if(found == 0) {
+
+      // 没有进程运行，satp寄存器使用内核页表
+      w_satp(MAKE_SATP(kernel_pagetable));
+      sfence_vma();
+
       intr_on();
       asm volatile("wfi");
     }
