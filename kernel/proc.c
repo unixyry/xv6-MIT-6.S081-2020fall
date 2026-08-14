@@ -35,17 +35,7 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
 
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-
       // 每个进程的内核栈物理页需映射到每个进程的内核页表中,kernel/proc.c/proc_kpagetable()
-      p->kstack_pa = (uint64)pa;
   }
   kvminithart();
 }
@@ -247,12 +237,14 @@ pagetable_t proc_kpagetable(struct proc* p)
     goto BAD_TRAMPOLINE;
   }
 
-  if(p->kstack_pa == 0)
+  char *kstack_pa = kalloc();
+
+  if(kstack_pa == 0)
   {
     goto BAD_TRAMPOLINE;
   }
 
-  if (mappages(k_pagetable, U_KSTACK, PGSIZE, (uint64)p->kstack_pa, PTE_R | PTE_W) < 0)
+  if (mappages(k_pagetable, U_KSTACK, PGSIZE, (uint64)kstack_pa, PTE_R | PTE_W) < 0)
   {
     goto BAD_U_KSTACK;
   }
@@ -262,7 +254,7 @@ pagetable_t proc_kpagetable(struct proc* p)
   return k_pagetable;
 
 BAD_U_KSTACK:
-  uvmunmap(k_pagetable, U_KSTACK, PGSIZE/PGSIZE, 0);
+  uvmunmap(k_pagetable, U_KSTACK, PGSIZE/PGSIZE, 1);
 
 BAD_TRAMPOLINE:
   uvmunmap(k_pagetable, TRAMPOLINE, PGSIZE/PGSIZE, 0);
@@ -310,7 +302,7 @@ void proc_free_kpagetable(pagetable_t k_pagetable)
   uvmunmap(k_pagetable, KERNBASE, PGROUNDUP((uint64)etext-KERNBASE)/PGSIZE, 0);
   uvmunmap(k_pagetable, (uint64)etext, PGROUNDUP(PHYSTOP-(uint64)etext)/PGSIZE, 0);
   uvmunmap(k_pagetable, TRAMPOLINE, PGSIZE/PGSIZE, 0);
-  uvmunmap(k_pagetable, U_KSTACK, PGSIZE/PGSIZE, 0);
+  uvmunmap(k_pagetable, U_KSTACK, PGSIZE/PGSIZE, 1);
 
   // 回收进程的内核页表
   uvmfree(k_pagetable, 0);

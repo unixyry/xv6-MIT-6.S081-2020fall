@@ -99,7 +99,6 @@ struct proc {
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
   pagetable_t k_pagetable;     // 进程的内核根页表
-  uint64 kstack_pa;             // 进程内核栈的物理地址, 与内核页表共享
   struct trapframe *trapframe; // data page for trampoline.S
   struct context context;      // swtch() here to run process
   struct file *ofile[NOFILE];  // Open files
