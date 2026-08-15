@@ -1,0 +1,5 @@
+1. Print a page table实验，vmprint的输出中，page 0包含什么？page 2中是什么？在用户模式下运行时，进程是否可以读取/写入page 1映射的内存？
+答：page 0包含`init`的执行代码和全局变量等数据，page 1是进程用户态栈区的guard page，在用户态运行时，不可读写page1映射的内存，page 2是进程用户态的栈区，补充，page 511包含的是trampoline，page 510包含的是trapframe
+
+2. 解释为什么在copyin_new()中需要第三个测试srcva + len < srcva：给出srcva和len值的例子，这样的值将使前两个测试为假（即它们不会导致返回-1），但是第三个测试为真 （导致返回-1）。
+答：数值溢出，srcva 和 len 都是 uint64。当它们的和超过 UINT64_MAX（即 2^64 - 1）时，会按模 2^64 回绕成一个较小的数。
