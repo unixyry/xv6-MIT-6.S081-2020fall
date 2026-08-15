@@ -97,6 +97,7 @@ struct proc {
   // these are private to the process, so p->lock need not be held.
   uint64 kstack;               // Virtual address of kernel stack
   uint64 sz;                   // Size of process memory (bytes)
+  uint64 k_sz;                 // 进程内核页表映射用户页表大小
   pagetable_t pagetable;       // User page table
   pagetable_t k_pagetable;     // 进程的内核根页表
   struct trapframe *trapframe; // data page for trampoline.S

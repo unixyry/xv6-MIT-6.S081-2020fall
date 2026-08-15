@@ -252,6 +252,42 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   return newsz;
 }
 
+// 进程同时扩展用户页表和内核页表
+uint64 kvmalloc(pagetable_t pagetable, pagetable_t k_pagetable, uint64 oldsz, uint64 newsz)
+{
+  char *mem;
+  uint64 a;
+  uint64  k_flags = 0;
+
+  if(newsz < oldsz)
+    return oldsz;
+
+  oldsz = PGROUNDUP(oldsz);
+  for(a = oldsz; a < newsz; a += PGSIZE){
+    mem = kalloc();
+    if(mem == 0){
+      kvmdealloc(pagetable, k_pagetable, a, oldsz);
+      return 0;
+    }
+    memset(mem, 0, PGSIZE);
+    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+      kfree(mem);
+      kvmdealloc(pagetable, k_pagetable, a, oldsz);
+      return 0;
+    }
+
+    k_flags = PTE_W|PTE_X|PTE_R;
+
+    if (remappages(k_pagetable, a, PGSIZE, (uint64)mem, k_flags) != 0)
+    {
+      kfree(mem);
+      kvmdealloc(pagetable, k_pagetable, a, oldsz);
+      return 0;
+    }
+  }
+  return newsz;
+}
+
 // Deallocate user pages to bring the process size from oldsz to
 // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
 // need to be less than oldsz.  oldsz can be larger than the actual
@@ -265,6 +301,21 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+  }
+
+  return newsz;
+}
+
+// 进程同时收缩用户页表和内核页表
+uint64 kvmdealloc(pagetable_t pagetable, pagetable_t k_pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+    uvmunmap(k_pagetable, PGROUNDUP(newsz), npages, 0);
   }
 
   return newsz;
@@ -380,23 +431,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -406,40 +441,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
-
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
-
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
-
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 // 打印进程的虚拟内存映射信息
@@ -468,4 +470,89 @@ void vmprint(pagetable_t pagetable, int depth)
       }
     }
   }
+}
+
+// 将进程的用户页表映射关系复制到内核页表中, 0/-1(成功/失败)
+uint64 copy_uspace(pagetable_t u_pg, pagetable_t k_pg, uint64 u_sz, uint64 oldsz)
+{
+  uint64  u_pa    = 0;    // 进程用户态物理地址
+  uint64  u_va    = 0;    // 进程用户态虚拟地址
+  pte_t*  pte     = 0;    // 进程用户叶子页表项
+  uint    u_flags = 0;    // 进程用户叶子页表项标志位
+  uint    k_flags = 0;
+  uint64  sz_copy = 0;    // 拷贝总大小
+
+  if (!u_pg || !k_pg || u_sz >= PLIC)
+  {
+    panic("copy_uspace: !u_pg || !k_pg || u_sz >= PLIC");
+  }
+
+  // 把多余的叶子页表项无效
+  for (u_va = u_sz; u_va < oldsz; u_va += PGSIZE)
+  {
+    if((pte = walk(k_pg, u_va, 0)) == 0)
+      panic("copy_uspace: walk");
+    if((*pte & PTE_V) == 0)
+      panic("copy_uspace: not mapped");
+    if(PTE_FLAGS(*pte) == PTE_V)
+      panic("copy_uspace: not a leaf");
+    *pte = 0;
+  }
+
+  for (u_va = 0; u_va < u_sz; u_va += PGSIZE)
+  {
+    pte = walk(u_pg, u_va, 0);
+    if (pte == 0)
+      panic("copy_uspace: pte 0");
+    if ((*pte & PTE_V) == 0)
+      panic("copy_uspace: pte !V");
+
+    u_pa = PTE2PA(*pte);
+    u_flags = PTE_FLAGS(*pte);
+    
+    if (u_flags&PTE_U)
+    {
+      // 去掉PTE_U标志位, 使内核态可读取
+      k_flags = u_flags & (~PTE_U);
+    }
+    // 内核态不负责访问guardpage是否有效, 必须保证内核态可访问, 防止内核态访问guardpage时触发页错误
+    // else
+    // {
+    //   k_flags = u_flags | (PTE_U);
+    // }
+    
+    if (remappages(k_pg, u_va, PGSIZE, u_pa, k_flags) != 0)
+    {
+      goto error;
+    }
+
+    sz_copy += PGSIZE;
+  }
+
+  return sz_copy;
+
+error:
+  uvmunmap(k_pg, 0, u_va/PGSIZE, 0);
+  uvmfree(k_pg, 0);
+  return 0;
+}
+
+// 重映射进程内核页表, 忽视PTE_V是否有效
+int remappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
+{
+  uint64 a, last;
+  pte_t *pte;
+
+  a = PGROUNDDOWN(va);
+  last = PGROUNDDOWN(va + size - 1);
+  for(;;){
+    if((pte = walk(pagetable, a, 1)) == 0)
+      return -1;
+    *pte = PA2PTE(pa) | perm | PTE_V;
+    if(a == last)
+      break;
+    a += PGSIZE;
+    pa += PGSIZE;
+  }
+  return 0;
 }

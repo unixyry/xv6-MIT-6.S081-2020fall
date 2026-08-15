@@ -116,6 +116,13 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  // 拷贝进程用户页表到进程内核页表
+  p->k_sz = copy_uspace(p->pagetable, p->k_pagetable, p->sz, p->k_sz);
+  if (p->k_sz == 0)
+  {
+    goto bad;
+  }
+
   if(p->pid==1) vmprint(p->pagetable, 0);
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)

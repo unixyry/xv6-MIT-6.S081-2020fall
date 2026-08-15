@@ -147,10 +147,11 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   if (p->k_pagetable)
-    proc_free_kpagetable(p->k_pagetable);
+    proc_free_kpagetable(p->k_pagetable, p->k_sz);
   p->pagetable = 0;
   p->k_pagetable = 0;
   p->sz = 0;
+  p->k_sz = 0;
   p->pid = 0;
   p->parent = 0;
   p->name[0] = 0;
@@ -212,10 +213,11 @@ pagetable_t proc_kpagetable(struct proc* p)
     goto BAD_VIRTIO0;
   }
 
-  if (mappages(k_pagetable, CLINT, 0x10000, CLINT, PTE_R | PTE_W) < 0)
-  {
-    goto BAD_CLINT;
-  }
+  // 该区域涵盖在进程的内核页表中的用户映射区域, 因此不再进行映射
+  // if (mappages(k_pagetable, CLINT, 0x10000, CLINT, PTE_R | PTE_W) < 0)
+  // {
+  //   goto BAD_CLINT;
+  // }
 
   if (mappages(k_pagetable, PLIC, 0x400000, PLIC, PTE_R | PTE_W) < 0)
   {
@@ -268,8 +270,8 @@ BAD_KERNBASE:
 BAD_PLIC:
   uvmunmap(k_pagetable, PLIC, PGROUNDUP(0x400000)/PGSIZE, 0);
 
-BAD_CLINT:
-  uvmunmap(k_pagetable, CLINT, PGROUNDUP(0x10000)/PGSIZE, 0);
+// BAD_CLINT:
+//   uvmunmap(k_pagetable, CLINT, PGROUNDUP(0x10000)/PGSIZE, 0);
 
 BAD_VIRTIO0:
   uvmunmap(k_pagetable, VIRTIO0, PGSIZE/PGSIZE, 0);
@@ -292,12 +294,17 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmfree(pagetable, sz);
 }
 
-void proc_free_kpagetable(pagetable_t k_pagetable)
+void proc_free_kpagetable(pagetable_t k_pagetable, uint64 sz)
 {
   // 只清掉三级页表的页表项(叶子页表项)的映射关系, 但并不释放叶子页表项指向物理页 
+  if (sz) // 从0开始的区域被映射用户数据区
+  {
+    uvmunmap(k_pagetable, 0, PGROUNDUP(sz)/PGSIZE, 0);
+  }
+
   uvmunmap(k_pagetable, UART0, PGSIZE/PGSIZE, 0);
   uvmunmap(k_pagetable, VIRTIO0, PGSIZE/PGSIZE, 0);
-  uvmunmap(k_pagetable, CLINT, PGROUNDUP(0x10000)/PGSIZE, 0);
+  // uvmunmap(k_pagetable, CLINT, PGROUNDUP(0x10000)/PGSIZE, 0);
   uvmunmap(k_pagetable, PLIC, PGROUNDUP(0x400000)/PGSIZE, 0);
   uvmunmap(k_pagetable, KERNBASE, PGROUNDUP((uint64)etext-KERNBASE)/PGSIZE, 0);
   uvmunmap(k_pagetable, (uint64)etext, PGROUNDUP(PHYSTOP-(uint64)etext)/PGSIZE, 0);
@@ -334,6 +341,8 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  p->k_sz = copy_uspace(p->pagetable, p->k_pagetable, p->sz, p->k_sz);
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -355,14 +364,20 @@ growproc(int n)
   struct proc *p = myproc();
 
   sz = p->sz;
+
+  if (sz + n >= PLIC)   // 因为映射同步到进程内核页表,为防止覆盖内核页表关键页, 限制最大size
+  {
+    return 0;
+  }
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((sz = kvmalloc(p->pagetable, p->k_pagetable, sz, sz + n)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    sz = kvmdealloc(p->pagetable, p->k_pagetable, sz, sz + n);
   }
   p->sz = sz;
+  p->k_sz = sz;
   return 0;
 }
 
@@ -387,6 +402,15 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // 拷贝进程用户页表到内核页表
+  np->k_sz = copy_uspace(np->pagetable, np->k_pagetable, np->sz, p->k_sz);
+  if (np->k_sz == 0)
+  {
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
 
   np->parent = p;
 
@@ -588,8 +612,6 @@ scheduler(void)
         // 切换进程内核页表并刷新快表
         w_satp(MAKE_SATP(p->k_pagetable));
         sfence_vma();
-
-        // printf("[pid %d] k_pagetable is [%p] satp is [%p]\n", p->pid, p->k_pagetable, r_satp());
 
         p->state = RUNNING;
         c->proc = p;

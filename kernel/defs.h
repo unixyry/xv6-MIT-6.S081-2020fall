@@ -108,7 +108,7 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
-void            proc_free_kpagetable(pagetable_t);
+void            proc_free_kpagetable(pagetable_t k_pagetable, uint64 sz);
 pagetable_t     proc_kpagetable(struct proc*);
 
 // swtch.S
@@ -167,8 +167,8 @@ void            kvmmap(uint64, uint64, uint64, int);
 int             mappages(pagetable_t, uint64, uint64, uint64, int);
 pagetable_t     uvmcreate(void);
 void            uvminit(pagetable_t, uchar *, uint);
-uint64          uvmalloc(pagetable_t, uint64, uint64);
-uint64          uvmdealloc(pagetable_t, uint64, uint64);
+uint64          uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz);
+uint64          uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz);
 #ifdef SOL_COW
 #else
 int             uvmcopy(pagetable_t, pagetable_t, uint64);
@@ -181,7 +181,14 @@ int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 void            vmprint(pagetable_t, int);
+uint64          copy_uspace(pagetable_t u_pg, pagetable_t k_pg, uint64 u_sz, uint64 oldsz);
+int             remappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm);
+uint64          kvmalloc(pagetable_t pagetable, pagetable_t k_pagetable, uint64 oldsz, uint64 newsz);
+uint64          kvmdealloc(pagetable_t pagetable, pagetable_t k_pagetable, uint64 oldsz, uint64 newsz);
 
+// vmcopyin,c
+int             copyin_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len);
+int             copyinstr_new(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max);
 // plic.c
 void            plicinit(void);
 void            plicinithart(void);
