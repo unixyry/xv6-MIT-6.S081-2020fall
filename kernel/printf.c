@@ -114,6 +114,26 @@ printf(char *fmt, ...)
     release(&pr.lock);
 }
 
+// 获取当前进程的函数调用栈帧
+void backtrace(void)
+{
+  uint64  fp_cur        = 0;          // 当前fp
+  uint64  kstack_begin  = 0;          // 进程内核栈虚拟地址起始
+  uint64  fp            = 0;
+  uint64  ra            = 0;
+
+  printf("backtrace:\n");
+
+  fp_cur = r_fp();
+  kstack_begin = PGROUNDUP(fp_cur);
+
+  for (fp = fp_cur; fp < kstack_begin; fp = *(uint64*)(fp-16))
+  {
+    ra = *(uint64*)(fp-8);
+    printf("%p\n", ra);
+  }
+}
+
 void
 panic(char *s)
 {
