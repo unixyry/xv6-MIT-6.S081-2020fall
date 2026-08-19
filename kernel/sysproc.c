@@ -96,3 +96,35 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64 sys_sigalarm(void)
+{
+  int           ticks     = 0;
+  uint64        func_pos  = 0;
+  struct proc*  p         = myproc();
+
+  if(argint(0, &ticks) < 0 || argaddr(1, &func_pos) < 0)
+    return -1;
+
+  if (ticks < 0)
+  {
+    printf("sigalarm ticks cannot be [%d]\n", ticks);
+    return -1;
+  }
+
+  p->ticks = ticks;
+  p->ticks_remain = ticks;
+  p->alarm_handler = (void(*)(void))func_pos;
+    
+  return 0;
+}
+
+uint64 sys_sigreturn(void)
+{
+  struct proc* p = myproc();
+  // 从中断位置恢复
+  memmove(p->trapframe, p->trapframe_t, sizeof(struct trapframe));
+  p->ticks_remain = p->ticks;
+  // 这里需要返回p->trapframe->a0, 即用户层中断时的a0, 以完全恢复中断现场
+  return p->trapframe->a0;
+}

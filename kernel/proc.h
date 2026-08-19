@@ -103,4 +103,10 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  // 进程调用sigalarm后，间隔ticks次时钟中断后，中断调用alarm_handler
+  int ticks;
+  int ticks_remain;
+  void (*alarm_handler)(void);
+  struct trapframe *trapframe_t;  // 用于恢复到中断位置
 };
