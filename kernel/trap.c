@@ -16,6 +16,13 @@ void kernelvec();
 
 extern int devintr();
 
+enum SCAUSE_TYPE
+{
+  SYS_CALL = 8,
+  PAGEFAULT_LOAD = 13,
+  PAGEFAULT_SAVE = 15,
+};
+
 void
 trapinit(void)
 {
@@ -37,6 +44,7 @@ void
 usertrap(void)
 {
   int which_dev = 0;
+  uint64 scause = 0;
 
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
@@ -49,8 +57,10 @@ usertrap(void)
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
+
+  scause = r_scause();
   
-  if(r_scause() == 8){
+  if(SYS_CALL == scause){
     // system call
 
     if(p->killed)
@@ -67,7 +77,16 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  }
+  else if (PAGEFAULT_LOAD == scause || PAGEFAULT_SAVE == scause)  // 执行save/laod操作时触发缺页中断
+  {
+    
+    if (lazy_alloc(r_stval()) != 0)
+    {
+      p->killed = 1;
+    }
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

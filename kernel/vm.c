@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -179,14 +181,14 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   if((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
+  // 在懒分配策略下，sbrk申请的空间只有在save/load数据触发缺页中断时才分配物理页并映射页表
+  // 因此,不再将pte为0和没有PTE_V标志位视作错误
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
-    if(do_free){
+    if(do_free && (*pte & PTE_V)){
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
     }
@@ -313,11 +315,14 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   uint flags;
   char *mem;
 
+  // 在懒分配策略下，sbrk申请的空间只有在save/load数据触发缺页中断时才分配物理页并映射页表
+  // 因此,不再将pte为0和没有PTE_V标志位视作错误
+
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -359,8 +364,24 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
+    // 懒分配时，用户物理页还没有分配，用户页表也没有映射地址关系
+    // 这里进行物理页分配和页表映射
     if(pa0 == 0)
-      return -1;
+    {
+      // 并非所有的va都是懒分配造成的, 可能va本身就是非法的, 仍然需要满足va是先被sbrk声明过, 即在proc.sz范围以内
+      if (va0 >= myproc()->sz)
+        return -1;
+
+      pa0 = (uint64)kalloc();
+      if (pa0 == 0)
+      {
+        return -1;
+      }
+      if(mappages(pagetable, PGROUNDDOWN(va0), PGSIZE, (uint64)pa0, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+        kfree((void*)pa0);
+        return -1;
+      }
+    }
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -384,8 +405,24 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
+    // 懒分配时，用户物理页还没有分配，用户页表也没有映射地址关系
+    // 这里进行物理页分配和页表映射
     if(pa0 == 0)
-      return -1;
+    {
+      // 并非所有的va都是懒分配造成的, 可能va本身就是非法的, 仍然需要满足va是先被sbrk声明过, 即在proc.sz范围以内
+      if (va0 >= myproc()->sz)
+        return -1;
+      pa0 = (uint64)kalloc();
+      if (pa0 == 0)
+      {
+        return -1;
+      }
+      if(mappages(pagetable, PGROUNDDOWN(va0), PGSIZE, (uint64)pa0, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+        kfree((void*)pa0);
+        return -1;
+      }
+    }
+      
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;

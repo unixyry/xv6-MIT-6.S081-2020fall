@@ -150,6 +150,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->guardpage = 0;
 }
 
 // Create a user page table for a given process,
@@ -253,6 +254,40 @@ growproc(int n)
   return 0;
 }
 
+// 懒分配，当触发缺页中断时，才分配物理页并在页表中建立映射
+int lazy_alloc(uint64 va)
+{
+  struct proc*  p     = myproc();
+  char*         mem   = 0;
+  uint64        va_t  = PGROUNDDOWN(va);
+
+  // 如果缺页中断发生在超出进程申请范围的虚拟地址, 则不做分配, 终止进程
+  if (va_t >= p->sz || va_t+PGSIZE < va_t)
+  {
+    printf("oversize!!!\n");
+    return -1;
+  }
+
+  // 不能映射到guardpage
+  if (va_t == p->guardpage)
+  {
+    return -1;
+  }
+
+  mem = kalloc();
+  if (mem == 0)
+  {
+    return -1;
+  }
+
+  if(mappages(p->pagetable, va_t, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    kfree(mem);
+    return -1;
+  }
+
+  return 0;
+}
+
 // Create a new process, copying the parent.
 // Sets up child kernel stack to return as if from fork() system call.
 int
@@ -274,6 +309,7 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+  np->guardpage = p->guardpage;
 
   np->parent = p;
 

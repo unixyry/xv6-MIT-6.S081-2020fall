@@ -20,6 +20,7 @@ exec(char *path, char **argv)
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
   struct proc *p = myproc();
+  uint64 guardpage = 0;
 
   begin_op();
 
@@ -72,6 +73,7 @@ exec(char *path, char **argv)
     goto bad;
   sz = sz1;
   uvmclear(pagetable, sz-2*PGSIZE);
+  guardpage = sz-2*PGSIZE;
   sp = sz;
   stackbase = sp - PGSIZE;
 
@@ -112,6 +114,7 @@ exec(char *path, char **argv)
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
   p->sz = sz;
+  p->guardpage = guardpage;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
