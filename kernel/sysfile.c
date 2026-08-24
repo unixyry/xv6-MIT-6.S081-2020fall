@@ -434,7 +434,7 @@ sys_exec(void)
       argv[i] = 0;
       break;
     }
-    argv[i] = kalloc();
+    argv[i] = cow_kalloc();
     if(argv[i] == 0)
       goto bad;
     if(fetchstr(uarg, argv[i], PGSIZE) < 0)
@@ -444,13 +444,13 @@ sys_exec(void)
   int ret = exec(path, argv);
 
   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
-    kfree(argv[i]);
+    cow_kfree(argv[i]);
 
   return ret;
 
  bad:
   for(i = 0; i < NELEM(argv) && argv[i] != 0; i++)
-    kfree(argv[i]);
+    cow_kfree(argv[i]);
   return -1;
 }
 

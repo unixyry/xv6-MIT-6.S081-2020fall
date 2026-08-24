@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -21,7 +23,7 @@ extern char trampoline[]; // trampoline.S
 void
 kvminit()
 {
-  kernel_pagetable = (pagetable_t) kalloc();
+  kernel_pagetable = (pagetable_t) cow_kalloc();
   memset(kernel_pagetable, 0, PGSIZE);
 
   // uart registers
@@ -79,7 +81,7 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
     } else {
-      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
+      if(!alloc || (pagetable = (pde_t*)cow_kalloc()) == 0)
         return 0;
       memset(pagetable, 0, PGSIZE);
       *pte = PA2PTE(pagetable) | PTE_V;
@@ -188,7 +190,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not a leaf");
     if(do_free){
       uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      cow_kfree((void*)pa);
     }
     *pte = 0;
   }
@@ -200,7 +202,7 @@ pagetable_t
 uvmcreate()
 {
   pagetable_t pagetable;
-  pagetable = (pagetable_t) kalloc();
+  pagetable = (pagetable_t) cow_kalloc();
   if(pagetable == 0)
     return 0;
   memset(pagetable, 0, PGSIZE);
@@ -217,7 +219,7 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
 
   if(sz >= PGSIZE)
     panic("inituvm: more than a page");
-  mem = kalloc();
+  mem = cow_kalloc();
   memset(mem, 0, PGSIZE);
   mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
   memmove(mem, src, sz);
@@ -236,14 +238,14 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += PGSIZE){
-    mem = kalloc();
+    mem = cow_kalloc();
     if(mem == 0){
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
     memset(mem, 0, PGSIZE);
     if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
-      kfree(mem);
+      cow_kfree(mem);
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
@@ -286,7 +288,7 @@ freewalk(pagetable_t pagetable)
       panic("freewalk: leaf");
     }
   }
-  kfree((void*)pagetable);
+  cow_kfree((void*)pagetable);
 }
 
 // Free user memory pages,
@@ -311,7 +313,9 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+
+  // 写时复制，在fork()时清除叶子pte的PTE_W标志，子进程只复制页表，不申请空间
+  // 注意, copy不包含trapframe和trapoline
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,14 +323,14 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    // PTE_SET_FLAG(*pte, PTE_C);
+    PTE_CLEAR_FLAG(*pte, PTE_W);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
+    cow_copy((void*)pa);
   }
   return 0;
 
@@ -355,12 +359,25 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t* pte = 0;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if (va0 >= MAXVA)
       return -1;
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+    return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+    
+    if((*pte & PTE_W) == 0)
+      pa0 = copy_on_write(va0);
+    else
+      pa0 = PTE2PA(*pte);
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -439,4 +456,40 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// fork后, 写时复制
+uint64 copy_on_write(uint64 va)
+{
+  uint64        pa_r = 0;    // 原页表中只读的物理页首地址
+  uint64        pa_w = 0;    // 新分配的物理页
+  pte_t*        pte  = 0;
+  struct proc*  p = myproc();
+  uint64        flags = 0;
+  
+  pte = walk(p->pagetable, va, 0);
+  if (pte == 0)
+    panic("copy_on_write: walk 0");
+  if(PTE_FLAGS(*pte) == PTE_V)
+    panic("copy_on_write: not a leaf");
+  if(PTE_FLAGS(*pte) & PTE_W)
+    panic("copy_on_write: W");
+
+  flags = PTE_FLAGS(*pte);
+  
+  if((pa_w = (uint64)cow_kalloc()) == 0)
+  {
+    goto err;
+  }
+
+  pa_r = PTE2PA(*pte);
+  memmove((void*)pa_w, (char*)pa_r, PGSIZE);
+  *pte = PA2PTE(pa_w);
+  PTE_SET_FLAG(*pte, flags|PTE_W);
+
+  cow_kfree((void*)pa_r);
+
+  return pa_w;
+err:
+  return 0;
 }

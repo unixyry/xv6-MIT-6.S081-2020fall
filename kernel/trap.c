@@ -16,6 +16,12 @@ void kernelvec();
 
 extern int devintr();
 
+enum PAGEFAULT
+{
+  PAGEFAULT_LOAD = 13,
+  PAGEFAULT_SAVE = 15,
+};
+
 void
 trapinit(void)
 {
@@ -37,6 +43,7 @@ void
 usertrap(void)
 {
   int which_dev = 0;
+  uint64 scause = r_scause();
 
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
@@ -50,7 +57,7 @@ usertrap(void)
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  if(scause == 8){
     // system call
 
     if(p->killed)
@@ -67,7 +74,17 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } 
+  else if (PAGEFAULT_SAVE == scause)
+  {
+    // fork时父子进程共享页表, 叶子pte权限被修改(增加PTE_C标志, 删除PTE_W标志)
+    if (copy_on_write(r_stval()) == 0)
+    {
+      printf("COW failed\n");
+      p->killed = 1;
+    }
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

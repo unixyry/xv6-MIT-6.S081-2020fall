@@ -14,6 +14,12 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+static uint32 ref_count[32740]; // freelist总物理页个数(实际32730个)
+#define REF_IDX(pa) ((PGROUNDDOWN(pa)-0x0000000080046000)>>12)
+#define REF_ADD(pa) (ref_count[REF_IDX(pa)]++)
+#define REF_DEC(pa) (ref_count[REF_IDX(pa)]--)
+#define REF_GET(pa) (ref_count[REF_IDX(pa)])
+
 struct run {
   struct run *next;
 };
@@ -79,4 +85,57 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+void* cow_kalloc(void)
+{
+  struct run *r;
+
+  acquire(&kmem.lock);
+  r = kmem.freelist;
+  if(r)
+    kmem.freelist = r->next;
+  release(&kmem.lock);
+
+  if(r)
+  {
+    memset((char*)r, 5, PGSIZE); // fill with junk
+    REF_ADD((uint64)r);
+  }
+    
+  return (void*)r;
+}
+
+void cow_kfree(void *pa)
+{
+  struct run *r;
+
+  if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
+    panic("kfree");
+  
+  acquire(&kmem.lock);
+  REF_DEC((uint64)pa);
+  if (REF_GET((uint64)pa) > 0)
+  {
+    release(&kmem.lock);
+    return;
+  }    
+  else if (REF_GET((uint64)pa) < 0)
+    panic("cow_kfree: <0");
+  release(&kmem.lock);
+
+  // Fill with junk to catch dangling refs.
+  memset(pa, 1, PGSIZE);
+
+  r = (struct run*)pa;
+
+  acquire(&kmem.lock);
+  r->next = kmem.freelist;
+  kmem.freelist = r;
+  release(&kmem.lock);
+}
+
+void cow_copy(void *pa)
+{
+  REF_ADD((uint64)pa);
 }
