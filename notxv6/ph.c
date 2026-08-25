@@ -16,6 +16,7 @@ struct entry {
 struct entry *table[NBUCKET];
 int keys[NKEYS];
 int nthread = 1;
+pthread_mutex_t table_lock[NBUCKET];  // 竞态资源加锁，考虑到get并不关注value, 因此只在insert时加锁
 
 double
 now()
@@ -51,7 +52,9 @@ void put(int key, int value)
     e->value = value;
   } else {
     // the new is new.
+    pthread_mutex_lock(&table_lock[i]);
     insert(key, value, &table[i], table[i]);
+    pthread_mutex_unlock(&table_lock[i]);
   }
 }
 
@@ -113,6 +116,12 @@ main(int argc, char *argv[])
   assert(NKEYS % nthread == 0);
   for (int i = 0; i < NKEYS; i++) {
     keys[i] = random();
+  }
+
+  // 初始化锁
+  for (int i = 0; i < NBUCKET; i++)
+  {
+    pthread_mutex_init(&table_lock[i], NULL);
   }
 
   //
