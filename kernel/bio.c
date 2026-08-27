@@ -23,68 +23,183 @@
 #include "fs.h"
 #include "buf.h"
 
-struct {
-  struct spinlock lock;
-  struct buf buf[NBUF];
+#define BUDGET_IDX(blockno)     (blockno)%NBUDGET     // 将块号blockno进行哈希映射
 
-  // Linked list of all buffers, through prev/next.
-  // Sorted by how recently the buffer was used.
-  // head.next is most recent, head.prev is least.
-  struct buf head;
+struct {
+  struct buf buf[NBUF];
+  struct spinlock bdgt_lock[NBUDGET];       // 每个哈希桶的锁
+  struct buf bdgt[NBUDGET];                 // 哈希桶, 初始为空
+  struct spinlock bdgtfree_lock[NBUDGET];   // 每个哈希空桶的锁
+  struct buf bdgt_free[NBUDGET];            // 哈希空桶, 初始为空
+  struct spinlock freelist_lock;            // 空闲链表锁
+  struct buf freelist;                      // 空闲链表, 所有buf初始时挂在上面, release时引用为0归还到freelist头部
 } bcache;
+
+// 头插法插入head
+void insert(struct buf* head, struct buf* buf_t)
+{
+  buf_t->pre = head;
+  buf_t->next = head->next;
+  head->next->pre = buf_t;
+  head->next = buf_t;
+}
+
+// 将指定的节点移出对应list
+void buf_erease(struct buf* target)
+{
+  target->pre->next = target->next;
+  target->next->pre = target->pre;
+  target->pre = target;
+  target->next = target;
+}
 
 void
 binit(void)
 {
-  struct buf *b;
+  char        str[16] = {0};
+  struct buf* b       = 0;
 
-  initlock(&bcache.lock, "bcache");
+  // 初始化哈希桶和哈希桶锁
+  for (int i = 0; i < NBUDGET; i++)
+  {
+    snprintf(str, 16, "bcache_bdgt%d", i);
+    initlock(&bcache.bdgt_lock[i], str);
 
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
-  for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    bcache.bdgt[i].next = &bcache.bdgt[i];
+    bcache.bdgt[i].pre = &bcache.bdgt[i];
+
+    snprintf(str, 16, "bcache_bdgtfree%d", i);
+    initlock(&bcache.bdgtfree_lock[i], str);
+
+    bcache.bdgt_free[i].next = &bcache.bdgt_free[i];
+    bcache.bdgt_free[i].pre = &bcache.bdgt_free[i];
   }
+
+  // 初始化空闲链表
+  initlock(&bcache.freelist_lock, "bcache_free");
+  bcache.freelist.next = &bcache.freelist;
+  bcache.freelist.pre = &bcache.freelist;
+  for (b = bcache.buf; b < bcache.buf+NBUF; b++)
+  {
+    insert(&bcache.freelist, b);
+    initsleeplock(&b->lock, "buffer");
+  }
+}
+
+// 在bdgt_idx哈希桶中寻找对应blockno的buf
+struct buf* search_bdgt_cached(struct buf* head, uint dev, uint blockno)
+{
+    struct buf* b = 0;
+
+    for (b = head->next; b != head; b = b->next)
+    {
+      if(b->dev == dev && b->blockno == blockno){
+        return b;
+      }
+    }
+    return 0;
 }
 
 // Look through buffer cache for block on device dev.
 // If not found, allocate a buffer.
 // In either case, return locked buffer.
+
+// 1.bdgt_idx哈希桶找cached -> 2.bdgt_idx哈希空桶找cached -> 3.bdgt_idx哈希空桶找free -> 4.freelist取新buf -> 5.从别的哈希空桶拿
 static struct buf*
 bget(uint dev, uint blockno)
 {
-  struct buf *b;
+  struct buf* buf       = 0;
+  uint8       bdgt_idx  = BUDGET_IDX(blockno);  // 原始哈希桶号
 
-  acquire(&bcache.lock);
+  acquire(&(bcache.bdgt_lock[bdgt_idx]));     // 需对对应的哈希桶全程进行上锁
 
-  // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
-    if(b->dev == dev && b->blockno == blockno){
-      b->refcnt++;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
-    }
+  // 1.在bdgt_idx哈希桶中寻找是否有已映射到blockno的buf
+  buf = search_bdgt_cached(&bcache.bdgt[bdgt_idx], dev, blockno);
+  if (buf != 0)
+  {
+    buf->refcnt++;
+    release(&(bcache.bdgt_lock[bdgt_idx]));
+    acquiresleep(&buf->lock);
+    return buf;
   }
 
-  // Not cached.
-  // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
-    }
+  // 2.在bdgt_idx哈希空桶中找是否有已映射到blockno的buf
+  acquire(&(bcache.bdgtfree_lock[bdgt_idx]));
+  buf = search_bdgt_cached(&bcache.bdgt_free[bdgt_idx], dev, blockno);
+  if (buf != 0)
+  {
+    // 从空桶中取出
+    buf_erease(buf);
+    buf->refcnt = 1;
+    release(&(bcache.bdgtfree_lock[bdgt_idx]));
+    // 插入到bdgt_idx哈希桶头部
+    insert(&bcache.bdgt[bdgt_idx], buf);
+    release(&(bcache.bdgt_lock[bdgt_idx]));
+    acquiresleep(&buf->lock);
+    return buf;
   }
+
+  // 3. 在bdgt_idx哈希空桶中找LRU的buf
+  if (bcache.bdgt_free[bdgt_idx].pre != &bcache.bdgt_free[bdgt_idx])
+  {
+    buf = bcache.bdgt_free[bdgt_idx].pre;
+    // 从空桶中取出
+    buf_erease(buf);
+    buf->dev = dev;
+    buf->blockno = blockno;
+    buf->valid = 0;
+    buf->refcnt = 1;
+    release(&(bcache.bdgtfree_lock[bdgt_idx]));
+    // 插入到bdgt_idx哈希桶头部
+    insert(&bcache.bdgt[bdgt_idx], buf);
+    release(&(bcache.bdgt_lock[bdgt_idx]));
+    acquiresleep(&buf->lock);
+    return buf;
+  }
+  release(&(bcache.bdgtfree_lock[bdgt_idx]));
+  
+  // 4.在freelist中找一个新buf放入到哈希桶中, bdgt_idx哈希桶的锁继续保持
+  acquire(&(bcache.freelist_lock));
+  if (bcache.freelist.next != &bcache.freelist)  // freelist不为空
+  {
+    buf = bcache.freelist.next;
+    buf->dev = dev;
+    buf->blockno = blockno;
+    buf->valid = 0;
+    buf->refcnt = 1;
+    // 从freelist中取出
+    buf_erease(buf);
+    release(&(bcache.freelist_lock));
+    // 插入到bdgt_idx哈希桶头部
+    insert(&bcache.bdgt[bdgt_idx], buf);
+    release(&(bcache.bdgt_lock[bdgt_idx]));
+    acquiresleep(&buf->lock);
+    return buf;
+  }
+  release(&(bcache.freelist_lock));
+
+  // 5. 从别的哈希空桶中取LRU
+  for (uint8 bdgt_idx_t = (bdgt_idx+1)%NBUDGET; bdgt_idx_t != bdgt_idx; bdgt_idx_t = (bdgt_idx_t+1)%NBUDGET)
+  {
+    acquire(&(bcache.bdgtfree_lock[bdgt_idx_t]));
+    if (bcache.bdgt_free[bdgt_idx_t].pre != &bcache.bdgt_free[bdgt_idx_t])
+    {
+      buf = bcache.bdgt_free[bdgt_idx_t].pre;
+      buf->dev = dev;
+      buf->blockno = blockno;
+      buf->valid = 0;
+      buf->refcnt = 1;
+      buf_erease(buf);
+      release(&(bcache.bdgtfree_lock[bdgt_idx_t]));
+      // 插入到bdgt_idx哈希桶头部
+      insert(&bcache.bdgt[bdgt_idx], buf);
+      release(&(bcache.bdgt_lock[bdgt_idx]));
+      acquiresleep(&buf->lock);
+      return buf;
+    }
+    release(&(bcache.bdgtfree_lock[bdgt_idx_t]));
+  }
+
   panic("bget: no buffers");
 }
 
@@ -116,38 +231,42 @@ bwrite(struct buf *b)
 void
 brelse(struct buf *b)
 {
+  uint8 bdgt_idx = BUDGET_IDX(b->blockno);    // 哈希桶号
+
   if(!holdingsleep(&b->lock))
     panic("brelse");
 
   releasesleep(&b->lock);
 
-  acquire(&bcache.lock);
+  acquire(&(bcache.bdgt_lock[bdgt_idx]));
   b->refcnt--;
   if (b->refcnt == 0) {
-    // no one is waiting for it.
-    b->next->prev = b->prev;
-    b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    // 归还给哈希空桶
+    buf_erease(b);
+    acquire(&(bcache.bdgtfree_lock[bdgt_idx]));
+    insert(&bcache.bdgt_free[bdgt_idx], b);
+    release(&(bcache.bdgtfree_lock[bdgt_idx]));
   }
   
-  release(&bcache.lock);
+  release(&(bcache.bdgt_lock[bdgt_idx]));
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  uint8 bdgt_idx = BUDGET_IDX(b->blockno);               // 哈希桶号
+
+  acquire(&(bcache.bdgt_lock[bdgt_idx]));
   b->refcnt++;
-  release(&bcache.lock);
+  release(&(bcache.bdgt_lock[bdgt_idx]));
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  uint8 bdgt_idx = BUDGET_IDX(b->blockno);               // 哈希桶号
+
+  acquire(&(bcache.bdgt_lock[bdgt_idx]));
   b->refcnt--;
-  release(&bcache.lock);
+  release(&(bcache.bdgt_lock[bdgt_idx]));
 }
 
 
