@@ -92,9 +92,13 @@ kalloc(void)
   acquire(&(freelists[id].lock));
   r = freelists[id].freelist;
   if(r)
+  {
     freelists[id].freelist = r->next;
+    release(&(freelists[id].lock));
+  }
   else  // 当前cpu的freelist没有,则从别的cpu上拿
   {
+    release(&(freelists[id].lock)); // 防止死锁，后面的操作和id无关
     for (int i = 0; i < NCPU; i++)
     {
       if (i == id)
@@ -111,7 +115,6 @@ kalloc(void)
         break;
     }
   }
-  release(&(freelists[id].lock));
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
