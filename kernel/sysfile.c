@@ -165,6 +165,45 @@ bad:
   return -1;
 }
 
+static struct inode* create(char *path, short type, short major, short minor);
+
+// 建立软链接, 新建立一个inode, 这个inode的addr指向的数据块中存储目标文件的路径
+uint64 sys_symlink(void)
+{
+  char          target[MAXPATH];
+  char          path[MAXPATH];
+  struct inode* ip = 0;
+
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+
+  // 没有path就新建一个inode
+  if((ip = namei(path)) == 0)
+  {
+    if ((ip = create(path, T_SYMLINK, 0, 0)) == 0) // 创建inode失败
+    {
+      end_op();
+      return -1;
+    }
+    // 更新软链接, create会对ip上锁
+    symlink_set(ip, target);
+  }
+  else
+  {
+    ilock(ip);
+    // 更新软链接
+    symlink_set(ip, target);
+  }
+
+  iunlockput(ip);
+  
+  end_op();
+
+  return 0;
+}
+
 // Is the directory dp empty except for "." and ".." ?
 static int
 isdirempty(struct inode *dp)
@@ -243,6 +282,9 @@ create(char *path, short type, short major, short minor)
 {
   struct inode *ip, *dp;
   char name[DIRSIZ];
+  char path_t[MAXPATH] = {0};
+
+  strncpy(path_t, path, strlen(path));
 
   if((dp = nameiparent(path, name)) == 0)
     return 0;
@@ -252,7 +294,7 @@ create(char *path, short type, short major, short minor)
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
-    if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
+    if((type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE)) || (type == T_SYMLINK))
       return ip;
     iunlockput(ip);
     return 0;
@@ -320,6 +362,18 @@ sys_open(void)
     iunlockput(ip);
     end_op();
     return -1;
+  }
+
+  if (ip->type == T_SYMLINK)
+  {
+    if (!(omode & O_NOFOLLOW))
+    {
+      if ((ip = symlink_get(ip)) == 0)
+      {
+        end_op();
+        return -1;
+      }
+    }
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){

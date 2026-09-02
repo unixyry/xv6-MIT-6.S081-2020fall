@@ -728,3 +728,82 @@ nameiparent(char *path, char *name)
 {
   return namex(path, 1, name);
 }
+
+// 在inode中增加软连接, 数据块中存储path
+int symlink_set(struct inode* ip, char *path)
+{
+  struct buf* bp      = 0;
+  uint        blockno = 0;
+
+  // 软链接只能指向一个有效文件，因此只使用addrs[0]
+  if ((blockno = ip->addrs[0]) == 0) // 新建数据块
+  {
+    ip->addrs[0] = blockno = balloc(ip->dev);
+  }
+
+  bp = bread(ip->dev, blockno);
+  memset(bp->data, 0, sizeof(bp->data));
+  memmove(bp->data, path, strlen(path));
+  log_write(bp);
+  brelse(bp);
+  iupdate(ip);
+
+  return 0;
+}
+
+#define LINK_LIMIT  10
+
+// 找到软链接指向的有效文件
+struct inode* symlink_get(struct inode* ip)
+{
+  struct buf*   bp              = 0;
+  char*         path            = 0;
+  uint          blockno         = 0;
+  uint          depth           = 0;
+  struct inode* cur             = 0;
+  struct inode* target          = 0;
+
+  cur = ip;
+
+  // 软链接只能指向一个有效文件，因此只使用addrs[0]
+  if ((blockno = cur->addrs[0]) == 0) // 没有有效的软链接数据块返回错误
+  {
+    iunlockput(cur);
+    return 0;
+  }
+
+  // 直到找到非连接文件的inode
+  for (depth = 0; cur->type == T_SYMLINK && depth < LINK_LIMIT; depth++)
+  {
+    bp = bread(cur->dev, blockno);
+    path = (char*)bp->data;
+    iunlockput(cur);
+    if ((cur = namei(path)) == 0) // 连接地址无效
+    {
+      brelse(bp);
+      return 0;
+    }
+    brelse(bp);
+    ilock(cur);
+    if (cur->type != T_SYMLINK)
+    {
+      break;
+    }
+    if ((blockno = cur->addrs[0]) == 0) // 没有有效软链接数据块
+    {
+      iunlockput(cur);
+      return 0;
+    }
+  }
+  
+  // 循环连接
+  if (depth == LINK_LIMIT)
+  {
+    iunlockput(cur);
+    return 0;
+  }
+
+  target = cur; // 需要外部释放target inode
+
+  return target;
+}
