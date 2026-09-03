@@ -82,6 +82,20 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+#define MAP_FAILED (-1)
+// 进程mmap的信息
+struct _mmap_info
+{
+  uint          valid;                  // 这个mmap映射关系是否还有效
+  struct inode* file_inode;             // 映射的文件inode
+  int           offset;                 // 从文件的此处偏移开始映射
+  uint64        addr_va;                // 虚拟内存中的映射区域首地址
+  int           length;                 // 虚拟内存中的映射区域总长
+  int           prot;                   // 读写权限 (PROT_READ 可读 | PROT_WRITE 可写)
+  int           flags;                  // 映射的可见性 (MAP_PRIVATE 修改仅当前进程可见,且不写入磁盘 | MAP_SHARED 写回磁盘)
+}typedef mmap_info;
+
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -103,4 +117,5 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  mmap_info mmap_info[NOFILE]; // 进程mmap映射区域的信息
 };

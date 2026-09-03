@@ -8,6 +8,8 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct _mmap_info;
+typedef struct _mmap_info mmap_info;
 
 // bio.c
 void            binit(void);
@@ -105,6 +107,7 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
+int             munmap(int addr_va, int length);
 
 // swtch.S
 void            swtch(struct context*, struct context*);
@@ -171,6 +174,8 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+int             uvm_mmap(pagetable_t pagetable, mmap_info* mmap_info, uint64 va);
+int             uvm_munmap(pagetable_t pagetable, mmap_info* mmap_info, uint64 va, int length);
 
 // plic.c
 void            plicinit(void);

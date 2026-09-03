@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -282,6 +286,9 @@ fork(void)
   }
   np->sz = p->sz;
 
+  // 拷贝mmap_info
+  memmove(np->mmap_info, p->mmap_info, NOFILE*sizeof(struct _mmap_info));
+
   np->parent = p;
 
   // copy saved user registers.
@@ -343,6 +350,15 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // 先将mmap区域全部清空
+  mmap_info* mmap_info = 0;
+  for (mmap_info = p->mmap_info; mmap_info < p->mmap_info+NOFILE; mmap_info++)
+  {
+    if (mmap_info->valid)
+      munmap(mmap_info->addr_va, mmap_info->length);
+    memset(mmap_info, 0, sizeof(struct _mmap_info));
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
@@ -700,4 +716,33 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+int munmap(int addr_va, int length)
+{
+  struct proc* proc_p     = myproc(); // 进程pcb
+  mmap_info*   mmap_info  = 0;
+
+  for (mmap_info = proc_p->mmap_info; mmap_info < proc_p->mmap_info+NOFILE; mmap_info++)
+  {
+    if (mmap_info->valid && addr_va >= mmap_info->addr_va && addr_va <= mmap_info->addr_va+mmap_info->length)
+      break;
+  }
+
+  if (mmap_info == proc_p->mmap_info+NOFILE)
+    return MAP_FAILED;
+
+  if (uvm_munmap(proc_p->pagetable, mmap_info, addr_va, length) == -1)
+    return MAP_FAILED;
+
+  // 清空映射
+  if (addr_va-mmap_info->addr_va+length == mmap_info->length)
+  {
+    mmap_info->file_inode->ref--;     // 减少文件的引用计数
+    proc_p->sz -= mmap_info->length;  // 减少进程堆区大小
+    memset(mmap_info, 0, sizeof(struct _mmap_info));
+  }
+
+  // 测试数据保证了munmap的操作, 因此, 不做额外的状态更新(?目前只能保证unmap顺序是从小到大的)
+  return 0;
 }

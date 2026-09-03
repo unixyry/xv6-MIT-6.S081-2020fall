@@ -16,6 +16,12 @@ void kernelvec();
 
 extern int devintr();
 
+enum page_fault
+{
+  PAGE_FAULT_READ = 13,
+  PAGE_FAULT_WRITE = 15,
+};
+
 void
 trapinit(void)
 {
@@ -65,7 +71,33 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } else if(r_scause() == PAGE_FAULT_READ || r_scause() == PAGE_FAULT_WRITE){
+    int           addr_va   = r_stval();
+    mmap_info*    mmap_info = 0;
+    struct proc*  proc_p    = myproc();
+
+    // 先判断是否是mmap的区域
+    for (mmap_info = proc_p->mmap_info; mmap_info < proc_p->mmap_info+NOFILE; mmap_info++)
+    {
+      if (mmap_info->valid && addr_va >= mmap_info->addr_va && addr_va < mmap_info->addr_va+mmap_info->length)
+        break;
+    }
+
+    if (mmap_info == proc_p->mmap_info+NOFILE)  // 缺页中断不是任何一个mmap区域
+    {
+      printf("[page fault] addr_va->[%p]\n", addr_va);
+      p->killed = 1;
+    }
+    else
+    {
+      // 再进行页表映射(todo)
+      if (uvm_mmap(proc_p->pagetable, mmap_info, addr_va) == -1)
+      {
+        p->killed = 1;
+      }
+    }
+  }
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);

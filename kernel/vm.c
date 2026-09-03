@@ -5,6 +5,9 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+#include "fcntl.h"
 
 /*
  * the kernel's page table.
@@ -303,10 +306,11 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
+    // mmap是懒分配, 所以非法的叶子pte直接做跳过处理
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+      continue;
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -428,4 +432,111 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// mmap不分配物理内存, 缺页中断处理函数
+int uvm_mmap(pagetable_t pagetable, mmap_info* mmap_info, uint64 va)
+{
+  char* pa        = 0;
+  int   perm      = 0;  // 叶子pte记录的权限
+  int   file_off  = 0;  // 文件偏移
+
+  // 先获取物理页, 并将文件内容复制到物理页中
+  if ((pa = kalloc()) == 0)
+    return -1;
+
+  file_off = mmap_info->offset+(va-mmap_info->addr_va);
+
+  memset(pa, 0, PGSIZE);
+
+  begin_op();
+
+  if (readi(mmap_info->file_inode, 0, (uint64)pa, file_off, PGSIZE) == -1)
+  {
+    end_op();
+    kfree(pa);
+    return -1;
+  }
+
+  end_op();
+
+  // 建立映射
+  va = PGROUNDDOWN(va);
+  perm = PTE_U;
+  if (mmap_info->prot & PROT_READ)
+    perm |= PTE_R;
+  if (mmap_info->prot & PROT_WRITE)
+    perm |= PTE_W;
+
+  if(mappages(pagetable, va, PGSIZE, (uint64)pa, perm) != 0)
+  {
+    kfree(pa);
+    return -1;
+  }
+
+  return 0;
+}
+
+// 因为mmap懒分配策略, 有些页可能未分配
+pte_t* checkaddr(pagetable_t pagetable, uint64 va)
+{
+  pte_t*  pte = 0;
+
+  if(va >= MAXVA)
+    return 0;
+
+  pte = walk(pagetable, va, 0);
+  if(pte == 0)
+    return 0;
+  if((*pte & PTE_V) == 0)
+    return 0;
+  if((*pte & PTE_U) == 0)
+    return 0;
+  return pte;
+}
+
+int uvm_munmap(pagetable_t pagetable, mmap_info* mmap_info, uint64 va, int length)
+{
+  pte_t* pte = 0;
+
+  // 先根据权限，判断是否需要写回
+  if (mmap_info->flags&MAP_SHARED)
+  {
+    int     file_off  = 0;
+
+    file_off = mmap_info->offset+(va-mmap_info->addr_va);
+
+    // 一页一页检查是否有脏位进行写回, 注意, 因为mmap懒分配策略, 有些页可能未分配
+
+    begin_op();
+    
+    for (uint64 va_t = PGROUNDDOWN(va), tot = 0; tot < length; va_t += PGSIZE, tot += PGSIZE)
+    {
+      pte = checkaddr(pagetable, va_t);
+
+      if (pte == 0)  // 没有分配, 跳过
+        continue;
+      if ((*pte&PTE_D) == 0)  // 非脏页, 跳过
+        continue;
+
+      if (writei(mmap_info->file_inode, 1, va, file_off, length) != length)
+      {
+        return -1;
+        end_op();
+      }
+    }
+    
+    end_op();
+  }
+
+  // 写回后, 释放页表
+  for (uint64 va_t = PGROUNDDOWN(va), tot = 0; tot < length; va_t += PGSIZE, tot += PGSIZE)
+  {
+    pte = checkaddr(pagetable, va_t);
+    if (pte == 0)  // 没有分配, 跳过
+        continue;
+    uvmunmap(pagetable, va_t, 1, 1);
+  }
+  
+  return 0;
 }
