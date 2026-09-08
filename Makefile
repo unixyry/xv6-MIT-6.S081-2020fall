@@ -298,7 +298,7 @@ QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
 ifeq ($(LAB),net)
 QEMUOPTS += -netdev user,id=net0,hostfwd=udp::$(FWDPORT)-:2000 -object filter-dump,id=net0,netdev=net0,file=packets.pcap
-QEMUOPTS += -device e1000,netdev=net0,bus=pcie.0
+QEMUOPTS += -device e1000,netdev=net0,bus=pcie.0,romfile=""
 endif
 
 qemu: $K/kernel fs.img
