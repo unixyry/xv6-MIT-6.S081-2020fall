@@ -92,6 +92,9 @@ e1000_init(uint32 *xregs)
   regs[E1000_IMS] = (1 << 7); // RXDW -- Receiver Descriptor Write Back
 }
 
+#define TX_SUCCESS  0
+#define TX_FAILED   1
+
 int
 e1000_transmit(struct mbuf *m)
 {
@@ -103,7 +106,44 @@ e1000_transmit(struct mbuf *m)
   // a pointer so that it can be freed after sending.
   //
   
-  return 0;
+  uint64            desc_idx  = 0;  // tx环中TDT下标
+  struct tx_desc*   desc_it   = 0;  // tx环中描述符对象
+
+  acquire(&e1000_lock);
+
+  desc_idx = regs[E1000_TDT];
+  desc_it = tx_ring+desc_idx;
+
+  // 1. tx环中是否有可用的描述符
+  if ((desc_it->status & E1000_TXD_STAT_DD) == 0) // 无可用, 返回失败
+  {
+    printf("[e1000_transmit] ring full!\n");
+    release(&e1000_lock);
+    return TX_FAILED;
+  }
+
+  // 2. 释放上次发送的mbuf
+  if(tx_mbufs[desc_idx] != 0) 
+  { 
+    mbuffree(tx_mbufs[desc_idx]);
+    tx_mbufs[desc_idx] = 0;
+  }
+  tx_mbufs[desc_idx] = m;
+  memset(desc_it, 0, sizeof(struct tx_desc));
+
+  // 3. 填充描述符
+  desc_it->addr = (uint64)(tx_mbufs[desc_idx]->head);
+  desc_it->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  desc_it->length = tx_mbufs[desc_idx]->len;
+
+  // 4. 交给e1000网卡
+  regs[E1000_TDT] = (desc_idx+1)%TX_RING_SIZE;  // 修改TDT, e1000主动感知tail更新
+
+  // 交给e1000网卡后, 释放锁返回, 不需要再等待处理完毕释放mbuf, 下一次发送时再释放上次的mbuf即可
+
+  release(&e1000_lock);
+  
+  return TX_SUCCESS;
 }
 
 static void
@@ -115,6 +155,58 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  uint64            desc_idx        = 0;    // rx环中TDT下标
+  struct rx_desc*   desc_it         = 0;    // rx环中描述符对象
+  struct mbuf*      m[TX_RING_SIZE] = {0};  // 驱动传回网络栈的包
+  uint8             m_cnt           = 0;    // 本次中断驱动传回网络栈的包数量
+
+  acquire(&e1000_lock);
+
+  desc_idx = (regs[E1000_RDT]+1)%RX_RING_SIZE;
+  desc_it = rx_ring+desc_idx;
+
+  // 1. rx环中是否有可用的描述符, 一次中断可能对应多个包
+  for (; desc_idx != (regs[E1000_RDH]+1)%RX_RING_SIZE; desc_it++, desc_idx++)
+  {
+    if ((desc_it->status & E1000_RXD_STAT_DD) && (desc_it->status & E1000_RXD_STAT_EOP)) // 这里只考虑一个描述符一个包的情况
+    {
+      // 2. 将从e1000网卡接收到的包进行拷贝
+      m[m_cnt] = rx_mbufs[desc_idx];
+      m[m_cnt]->len = desc_it->length; // e1000网卡写入的长度
+      m[m_cnt]->head = (char*)desc_it->addr; // e1000网卡写入的地址
+
+      // 3. 为rx环重新分配mbuf
+      rx_mbufs[desc_idx] = mbufalloc(0);
+      if (!rx_mbufs[desc_idx])
+        panic("e1000");
+      memset(desc_it, 0, sizeof(struct rx_desc));
+      desc_it->addr = (uint64) rx_mbufs[desc_idx]->head;
+
+      m_cnt++;  // 增加包数
+    }
+    else  // e1000网卡收包是连续的, 遇见第一个无效描述符就退出
+    {
+      desc_idx = (desc_idx-1+RX_RING_SIZE)%RX_RING_SIZE;
+      desc_it = rx_ring+desc_idx;
+      break;
+    }
+      
+  }
+
+  if (m_cnt == 0)
+  {
+    release(&e1000_lock);
+    return ;
+  }
+
+  // 4. 处理完毕, 告知e1000网卡
+  regs[E1000_RDT] = desc_idx;  // 修改RDT, 更新rx环中可用描述符, 让e1000有效的描述符可以继续接收包
+
+  release(&e1000_lock);
+
+  // 5. 将包交给网络栈处理
+  for(int i = 0; i < m_cnt; i++)
+    net_rx(m[i]);
 }
 
 void
