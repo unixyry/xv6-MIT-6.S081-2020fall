@@ -1,0 +1,243 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1900" viewBox="0 0 1200 1900">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title { font: 700 30px "Noto Sans CJK SC","Microsoft YaHei",sans-serif; fill:#0f172a; }
+      .panel-title { font: 700 24px "Noto Sans CJK SC","Microsoft YaHei",sans-serif; fill:#0f172a; }
+      .column-title { font: 700 20px "Noto Sans CJK SC","Microsoft YaHei",sans-serif; fill:#1e293b; }
+      .cell { stroke:#334155; stroke-width:2; }
+      .user { fill:#dbeafe; }
+      .kernel { fill:#ffedd5; }
+      .physical { fill:#dcfce7; }
+      .device { fill:#ede9fe; }
+      .shared { fill:#fef3c7; }
+      .unmapped { fill:#f1f5f9; }
+      .cell-text { font: 17px "Noto Sans CJK SC","Microsoft YaHei",sans-serif; fill:#0f172a; text-anchor:middle; dominant-baseline:middle; }
+      .small { font: 14px "Noto Sans CJK SC","Microsoft YaHei",sans-serif; fill:#334155; }
+      .addr { font: 14px ui-monospace,SFMono-Regular,Consolas,monospace; fill:#334155; }
+      .permission { font: 13px ui-monospace,SFMono-Regular,Consolas,monospace; fill:#475569; text-anchor:end; dominant-baseline:middle; }
+      .map { fill:none; stroke:#334155; stroke-width:2; marker-end:url(#arrow); }
+      .alias { fill:none; stroke:#334155; stroke-width:2; stroke-dasharray:6 5; marker-end:url(#arrow); }
+      .identity { fill:none; stroke:#64748b; stroke-width:1.8; stroke-dasharray:3 4; marker-end:url(#arrow); }
+      .boundary { stroke:#0f172a; stroke-width:2.3; }
+      .note { font: 15px "Noto Sans CJK SC","Microsoft YaHei",sans-serif; fill:#475569; }
+      .legend { font: 15px "Noto Sans CJK SC","Microsoft YaHei",sans-serif; fill:#1e293b; dominant-baseline:middle; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="1900" fill="#ffffff"/>
+  <text x="600" y="42" class="title" text-anchor="middle">xv6 页表映射关系（按地址区间逐格对应）</text>
+
+  <!-- Panel A -->
+  <rect x="35" y="65" width="1130" height="790" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="60" y="100" class="panel-title">A. 每进程用户页表 → 物理地址</text>
+  <text x="260" y="132" class="column-title" text-anchor="middle">用户虚拟地址空间</text>
+  <text x="920" y="132" class="column-title" text-anchor="middle">物理地址空间</text>
+
+  <!-- User virtual column -->
+  <text x="65" y="160" class="addr">MAXVA</text>
+  <rect x="95" y="170" width="330" height="45" class="cell shared"/>
+  <text x="260" y="192" class="cell-text">TRAMPOLINE</text>
+  <text x="415" y="192" class="permission">R-X, U=0</text>
+
+  <rect x="95" y="215" width="330" height="45" class="cell shared"/>
+  <text x="260" y="237" class="cell-text">TRAPFRAME</text>
+  <text x="415" y="237" class="permission">RW-, U=0</text>
+
+  <rect x="95" y="260" width="330" height="165" class="cell unmapped"/>
+  <text x="260" y="342" class="cell-text">未映射空白区</text>
+
+  <text x="47" y="430" class="addr">p-&gt;sz</text>
+  <rect x="95" y="425" width="330" height="85" class="cell user"/>
+  <text x="260" y="458" class="cell-text">heap（向高地址增长）</text>
+  <text x="260" y="487" class="small" text-anchor="middle">由 sbrk 扩展</text>
+  <text x="415" y="467" class="permission">RW-, U=1</text>
+
+  <rect x="95" y="510" width="330" height="55" class="cell user"/>
+  <text x="260" y="537" class="cell-text">一页 user stack（向低地址增长）</text>
+  <text x="415" y="537" class="permission">RW-, U=1</text>
+
+  <rect x="95" y="565" width="330" height="40" class="cell unmapped"/>
+  <text x="260" y="585" class="cell-text">guard page：PTE_U=0</text>
+
+  <rect x="95" y="605" width="330" height="170" class="cell user"/>
+  <text x="260" y="674" class="cell-text">ELF text / data / BSS</text>
+  <text x="260" y="707" class="small" text-anchor="middle">实际页数与权限由程序映像决定</text>
+  <text x="415" y="690" class="permission">U=1</text>
+  <text x="78" y="781" class="addr">0</text>
+
+  <!-- Physical column A -->
+  <rect x="755" y="170" width="330" height="50" class="cell unmapped"/>
+  <text x="920" y="195" class="cell-text">xv6 未使用的高物理地址</text>
+  <text x="690" y="225" class="addr">PHYSTOP</text>
+
+  <rect x="755" y="220" width="330" height="220" class="cell physical"/>
+  <text x="920" y="242" class="small" text-anchor="middle">[PGROUNDUP(end), PHYSTOP)</text>
+  <rect x="780" y="260" width="280" height="42" rx="5" class="cell shared"/>
+  <text x="920" y="281" class="cell-text">某进程的 trapframe 页</text>
+  <rect x="780" y="315" width="280" height="70" rx="5" class="cell user"/>
+  <text x="920" y="339" class="cell-text">用户代码 / 数据 / 栈 / 堆页</text>
+  <text x="920" y="367" class="small" text-anchor="middle">实际物理位置与顺序不固定</text>
+  <text x="920" y="415" class="cell-text">页表页、内核栈页等</text>
+  <text x="713" y="446" class="addr">end</text>
+
+  <rect x="755" y="440" width="330" height="80" class="cell physical"/>
+  <text x="920" y="480" class="cell-text">kernel rodata / data / BSS</text>
+  <text x="702" y="526" class="addr">etext</text>
+
+  <rect x="755" y="520" width="330" height="90" class="cell physical"/>
+  <text x="920" y="545" class="cell-text">kernel text</text>
+  <rect x="780" y="562" width="280" height="32" rx="4" class="cell shared"/>
+  <text x="920" y="578" class="small" text-anchor="middle">trampoline 代码所在物理页</text>
+  <text x="669" y="616" class="addr">KERNBASE</text>
+
+  <rect x="755" y="610" width="330" height="165" class="cell unmapped"/>
+  <text x="920" y="675" class="cell-text">较低物理地址</text>
+  <text x="920" y="707" class="small" text-anchor="middle">包含 MMIO、boot ROM 与未使用区</text>
+  <text x="738" y="781" class="addr">0</text>
+
+  <!-- User mapping arrows -->
+  <path d="M425 192 C555 192,620 578,780 578" class="alias"/>
+  <text x="535" y="305" class="small">同一 trampoline 物理页</text>
+  <path d="M425 237 C560 237,630 281,780 281" class="map"/>
+  <path d="M425 468 C560 468,630 340,780 340" class="map"/>
+  <path d="M425 537 C560 537,630 350,780 350" class="map"/>
+  <path d="M425 690 C560 690,630 365,780 365" class="map"/>
+
+  <text x="60" y="824" class="note">说明：用户页表中的 TRAMPOLINE 和 TRAPFRAME 不带 PTE_U，只供管理态在陷阱进出时使用。</text>
+
+  <!-- Panel B -->
+  <rect x="35" y="875" width="1130" height="930" rx="14" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="60" y="912" class="panel-title">B. pgtbl 分支：每进程内核页表 → 物理地址</text>
+  <text x="260" y="946" class="column-title" text-anchor="middle">进程内核虚拟地址空间</text>
+  <text x="920" y="946" class="column-title" text-anchor="middle">物理地址空间</text>
+
+  <!-- Kernel virtual column -->
+  <text x="65" y="974" class="addr">MAXVA</text>
+  <rect x="95" y="980" width="330" height="42" class="cell shared"/>
+  <text x="260" y="1001" class="cell-text">TRAMPOLINE</text>
+  <text x="415" y="1001" class="permission">R-X</text>
+
+  <rect x="95" y="1022" width="330" height="40" class="cell unmapped"/>
+  <text x="260" y="1042" class="cell-text">TRAPFRAME 虚拟地址未映射</text>
+
+  <rect x="95" y="1062" width="330" height="40" class="cell unmapped"/>
+  <text x="260" y="1082" class="cell-text">kernel stack guard page</text>
+
+  <rect x="95" y="1102" width="330" height="45" class="cell kernel"/>
+  <text x="260" y="1124" class="cell-text">U_KSTACK（该进程内核栈）</text>
+  <text x="415" y="1124" class="permission">RW-</text>
+
+  <rect x="95" y="1147" width="330" height="103" class="cell unmapped"/>
+  <text x="260" y="1198" class="cell-text">未映射高地址区</text>
+  <text x="47" y="1256" class="addr">PHYSTOP</text>
+
+  <rect x="95" y="1250" width="330" height="80" class="cell kernel"/>
+  <text x="260" y="1279" class="cell-text">free memory：等值映射</text>
+  <text x="260" y="1307" class="small" text-anchor="middle">[end, PHYSTOP)</text>
+  <text x="415" y="1290" class="permission">RW-</text>
+  <text x="65" y="1336" class="addr">end</text>
+
+  <rect x="95" y="1330" width="330" height="70" class="cell kernel"/>
+  <text x="260" y="1365" class="cell-text">kernel data：等值映射</text>
+  <text x="415" y="1365" class="permission">RW-</text>
+  <text x="54" y="1406" class="addr">etext</text>
+
+  <rect x="95" y="1400" width="330" height="75" class="cell kernel"/>
+  <text x="260" y="1437" class="cell-text">kernel text：等值映射</text>
+  <text x="415" y="1437" class="permission">R-X</text>
+  <text x="19" y="1481" class="addr">KERNBASE</text>
+
+  <rect x="95" y="1475" width="330" height="55" class="cell unmapped"/>
+  <text x="260" y="1502" class="cell-text">未映射 / 其他地址</text>
+
+  <rect x="95" y="1530" width="330" height="35" class="cell device"/>
+  <text x="260" y="1547" class="cell-text">VIRTIO0</text>
+  <rect x="95" y="1565" width="330" height="35" class="cell device"/>
+  <text x="260" y="1582" class="cell-text">UART0</text>
+
+  <rect x="95" y="1600" width="330" height="42" class="cell unmapped"/>
+  <text x="260" y="1621" class="cell-text">未映射</text>
+
+  <rect x="95" y="1642" width="330" height="45" class="cell device"/>
+  <text x="260" y="1664" class="cell-text">PLIC</text>
+  <text x="4" y="1693" class="addr">0x0c000000</text>
+
+  <rect x="95" y="1687" width="330" height="48" class="cell unmapped"/>
+  <text x="260" y="1711" class="small" text-anchor="middle">CLINT 不映射，避免与低地址用户区冲突</text>
+
+  <rect x="95" y="1735" width="330" height="55" class="cell user"/>
+  <text x="260" y="1754" class="cell-text">用户区的镜像映射 [0, p-&gt;sz)</text>
+  <text x="260" y="1777" class="small" text-anchor="middle">同一虚拟地址、同一物理页，清除 PTE_U</text>
+  <text x="78" y="1796" class="addr">0</text>
+
+  <!-- Physical column B -->
+  <rect x="755" y="980" width="330" height="270" class="cell unmapped"/>
+  <text x="920" y="1115" class="cell-text">xv6 未使用的高物理地址</text>
+  <text x="690" y="1256" class="addr">PHYSTOP</text>
+
+  <rect x="755" y="1250" width="330" height="80" class="cell physical"/>
+  <text x="920" y="1276" class="cell-text">可分配物理页</text>
+  <text x="920" y="1306" class="small" text-anchor="middle">用户页、页表页、内核栈页等</text>
+  <text x="713" y="1336" class="addr">end</text>
+
+  <rect x="755" y="1330" width="330" height="70" class="cell physical"/>
+  <text x="920" y="1365" class="cell-text">kernel rodata / data / BSS</text>
+  <text x="702" y="1406" class="addr">etext</text>
+
+  <rect x="755" y="1400" width="330" height="75" class="cell physical"/>
+  <text x="920" y="1425" class="cell-text">kernel text</text>
+  <rect x="790" y="1440" width="260" height="26" rx="4" class="cell shared"/>
+  <text x="920" y="1453" class="small" text-anchor="middle">trampoline 所在页</text>
+  <text x="669" y="1481" class="addr">KERNBASE</text>
+
+  <rect x="755" y="1475" width="330" height="55" class="cell unmapped"/>
+  <text x="920" y="1502" class="cell-text">未使用 / 其他 MMIO</text>
+
+  <rect x="755" y="1530" width="330" height="35" class="cell device"/>
+  <text x="920" y="1547" class="cell-text">VIRTIO0</text>
+  <rect x="755" y="1565" width="330" height="35" class="cell device"/>
+  <text x="920" y="1582" class="cell-text">UART0</text>
+
+  <rect x="755" y="1600" width="330" height="42" class="cell unmapped"/>
+  <text x="920" y="1621" class="cell-text">未使用</text>
+
+  <rect x="755" y="1642" width="330" height="45" class="cell device"/>
+  <text x="920" y="1664" class="cell-text">PLIC</text>
+
+  <rect x="755" y="1687" width="330" height="48" class="cell device"/>
+  <text x="920" y="1711" class="cell-text">CLINT（物理设备仍存在）</text>
+  <rect x="755" y="1735" width="330" height="55" class="cell unmapped"/>
+  <text x="920" y="1754" class="cell-text">boot ROM / 未使用区</text>
+  <text x="920" y="1777" class="small" text-anchor="middle">物理地址 0 附近</text>
+  <text x="738" y="1796" class="addr">0</text>
+
+  <!-- Kernel mappings -->
+  <path d="M425 1001 C565 1001,640 1453,790 1453" class="alias"/>
+  <path d="M425 1124 C565 1124,640 1285,755 1285" class="alias"/>
+  <text x="518" y="1162" class="small">高地址别名</text>
+
+  <path d="M425 1290 L755 1290" class="identity"/>
+  <path d="M425 1365 L755 1365" class="identity"/>
+  <path d="M425 1437 L755 1437" class="identity"/>
+  <path d="M425 1547 L755 1547" class="identity"/>
+  <path d="M425 1582 L755 1582" class="identity"/>
+  <path d="M425 1664 L755 1664" class="identity"/>
+  <text x="555" y="1320" class="small">VA = PA</text>
+
+  <path d="M425 1762 C560 1762,640 1275,755 1275" class="map"/>
+  <text x="505" y="1690" class="small">copy_uspace()：</text>
+  <text x="505" y="1712" class="small">同 VA 指向同一用户物理页</text>
+
+  <text x="60" y="1833" class="note">注：图中高度不按地址比例；动态分配页在 [PGROUNDUP(end), PHYSTOP) 内的位置由 freelist 决定。</text>
+
+  <!-- Legend -->
+  <rect x="70" y="1855" width="24" height="18" class="cell user"/><text x="104" y="1865" class="legend">用户映射</text>
+  <rect x="230" y="1855" width="24" height="18" class="cell kernel"/><text x="264" y="1865" class="legend">内核映射</text>
+  <rect x="390" y="1855" width="24" height="18" class="cell physical"/><text x="424" y="1865" class="legend">物理 RAM</text>
+  <rect x="550" y="1855" width="24" height="18" class="cell device"/><text x="584" y="1865" class="legend">MMIO 设备</text>
+  <rect x="710" y="1855" width="24" height="18" class="cell shared"/><text x="744" y="1865" class="legend">共享 / 别名页</text>
+  <line x1="900" y1="1864" x2="960" y2="1864" class="identity"/><text x="975" y="1865" class="legend">等值映射</text>
+</svg>
